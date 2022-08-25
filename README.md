@@ -1,2 +1,3 @@
-# rays_exercise
-A short introduction to early warning signals as proxies of resilience
+# Introduction to early warning signals
+
+A short introduction to early warning signals as proxies of resilience. 

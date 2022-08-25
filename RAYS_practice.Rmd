@@ -1,0 +1,372 @@
+---
+title: "Resilience in practice"
+author: "Juan Rocha"
+date: "8/21/2022"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+```{r include = FALSE, warning = FALSE, message=FALSE}
+library(deSolve)
+library(tidyverse)
+library(emojifont)
+library(patchwork)
+library(waydown)
+library(phaseR)
+library(slider)
+library(sf)
+library(spData)
+library(earlywarnings)
+```
+
+## Introduction
+
+This notebook will guide you step-by-step on how to approximate resilience in systems, social-ecological or otherwise. We will use R as computing environment, but no previous knowledge of R is required. To run the notebook, click on the "knit" button in RStudio. Alternatively, you can also run code chunks individually, change parameters and see what happens.
+
+### Let's play God
+
+First let's use a system where we know exactly what is going on, a very simplified equation:
+
+$$\frac{dx}{dt}=x \left( 1- \frac{x}{K} \right) - c \left( \frac{x^2}{x^2+1} \right)$$
+
+where **x** is the population density (say `r emoji("fish")`), **K** is the carrying capacity (set to 10) and **c ** is the maximum harvest rate. In code:
+
+```{r}
+
+## Function:
+fisheries <- function(t,y,params){
+    with(as.list(c(y, params)), {
+    x = y
+    dx = x * (1-x/K) - c * (x^2/(x^2 + 1))
+    
+    return(list(c(dx)))
+  })
+}
+
+## Parameters
+params <- list(
+    K = 10,             # Carrying capacity
+    c = 1             # maximum harvest rate
+)
+
+## set up time steps
+times <- seq(from = 0, to = 100, by = 0.01)
+
+## initial conditions
+yini <- 8
+
+# Event function: to avoid computational problems
+posfun <- function(t, y, parms){
+  with(as.list(y), {
+    y[which(y<0)] <- 0
+    return(y)
+  })
+}
+
+## run the model
+out <- ode(
+      y = yini, times = times,  func = fisheries, parms = params,
+      method = "rk4", 
+      events=list(func = posfun, time = times)
+)
+```
+
+```{r}
+out |> as_tibble() |> 
+    rename(fish = `1`) |> 
+    ggplot(aes(x=time, y=fish)) +
+    geom_line(size = 0.25, show.legend = T) +
+    theme_light()
+```
+
+- Change the initial condition from 2 to 8, what happens?
+- Change the maximum harvest rate from 1 to 2.5, what happens?
+
+Let's investigate the potential:
+
+```{r}
+# simpler function:
+dx <- function(x){
+    x * (1-(x/K)) - c * (x^2/(x^2 + 1))
+}
+
+K = 10
+c = 1
+# values of x
+xs <- seq(0, 12, by = 0.01)
+
+# potential
+Vs <- approxPot1D(dx, xs)
+
+plot(xs,Vs, type = "l", ylab = "Potential", xlab = "X")
+
+```
+
+Run the previous chunk multiple times by varying **c**, the maximum harvest rate. Do you recover the same results as Scheffer 2009? At which point do you get one or multiple regimes?
+
+### Resilience
+
+One can make as many conceptual modifications of the concept of resilience as you wish. However, its mathematical meaning --and where the concept really comes from-- is the size of the basin of attraction. How do you approximate that? Is there ways to detect if the basin is getting bigger or smaller?
+
+To understand that, let's add a little bit of realism (but not too much) to our simple model. Small amounts of noise are perturbations. If the system is resilient, it should recover faster than when the system has lost resilience. Thus, we add a noise term to the equation that adds random and uniformly distributed noise.
+
+```{r}
+## Function:
+fisheries <- function(t,y,params){
+    with(as.list(c(y, params)), {
+    x = y
+    dx = x * (1-x/K) - c * (x^2/(x^2 + 1)) + runif(1, min = 0, max = 0.5)
+    
+    return(list(c(dx)))
+  })
+}
+
+## initial conditions
+yini <- 8
+
+## Parameters
+params <- list(
+    K = 10,             # Carrying capacity
+    c = 1             # maximum harvest rate
+)
+
+## run the model
+out <- ode(
+      y = yini, times = times,  func = fisheries, parms = params,
+      method = "rk4", 
+      events=list(func = posfun, time = times)
+)
+
+# plot it:
+p1 <- out |> as_tibble() |> 
+    rename(fish = `1`) |> 
+    ggplot(aes(x=time, y=fish)) +
+    geom_line(size = 0.25, show.legend = T) +
+    theme_light()
+
+out1 <- out |> as_tibble() |> 
+    rename(fish = `1`) |> 
+    filter(time %in% seq(0,100, 0.1)) |> 
+    filter(time > 10) |> 
+    mutate(time = as.numeric(time), fish = as.numeric(fish)) |> 
+    mutate(lag1 = slide_dbl(fish, ~.x[1], .before = 1, .after = 0, complete = FALSE))
+
+p2 <- out1 |> ggplot(aes(fish, lag1)) +
+    geom_point() +
+    geom_abline(intercept = 0, slope = 1, color = "orange") +
+    coord_equal()
+
+p1 + p2
+```
+
+Now change the maximum harvesting rate and compare the distribution of fish against its value in time - 1 (lag1)
+
+```{r}
+## Parameters
+params <- list(
+    K = 10,             # Carrying capacity
+    c = 2.5             # maximum harvest rate
+)
+
+## run the model
+out <- ode(
+      y = yini, times = times,  func = fisheries, parms = params,
+      method = "rk4", 
+      events=list(func = posfun, time = times)
+)
+
+# plot it:
+p1 <- out |> as_tibble() |> 
+    rename(fish = `1`) |> 
+    ggplot(aes(x=time, y=fish)) +
+    geom_line(size = 0.25, show.legend = T) +
+    theme_light()
+
+out2 <- out |> as_tibble() |> 
+    rename(fish = `1`) |> 
+    filter(time %in% seq(0,100, 0.1)) |> 
+    filter(time > 10) |> 
+    mutate(time = as.numeric(time), fish = as.numeric(fish)) |> 
+    mutate(lag1 = slide_dbl(fish, ~.x[1], .before = 1, .after = 0, complete = FALSE))
+
+p2 <- out2 |> 
+    ggplot(aes(fish, lag1)) +
+    geom_point() +
+    geom_abline(intercept = 0, slope = 1, color = "orange") +
+    coord_equal()
+
+p1 + p2
+```
+
+Maybe it is hard to see by eye, but here is the difference in auto correlation. For the system with $c = 1$ AR1 = `r with(out1, cor(fish, lag1, method = "pearson"))`, while for the system with $c = 2.5$ AR1 = `r with(out2, cor(fish, lag1, method = "pearson"))`. As the basin of attraction get smaller, the autocorrelation increases. That is a signature of loss of resilience. 
+
+Discuss in groups what do you think it happens when you increase noise?
+
+### Early warning signals
+
+There is an R package `earlywarnings` developed by Vasilis Dakos, one of the leading authorities in the development and applications of early warning signals of critical transitions as indicators of resilience.
+
+```{r fig.show = "hide", warnings = FALSE, message = FALSE}
+data(foldbif)
+out <- generic_ews(foldbif)
+dev.off()
+```
+
+It has a couple of data sets including `foldbif`, on which one can run the early warnings.
+
+```{r}
+
+foldbif |> 
+    as_tibble() |> 
+    rownames_to_column(var = "time") |> 
+    mutate(time = as.numeric(time)) |> 
+    ggplot(aes(time, y)) +
+    geom_line()
+
+out |> 
+    pivot_longer(cols = ar1:last_col(), names_to = "ews", values_to = "value") |> 
+    ggplot(aes(timeindex, value)) +
+    geom_line() +
+    facet_wrap(.~ews, scales = "free_y") +
+    theme_light()
+
+```
+
+```{r}
+#help(package = "earlywarnings")
+```
+
+Let's do it with our little model to better understand how it works. We will force the model to the alternative equilibria by increasing the maximum harvest rate over time:
+
+```{r}
+forcing_df <- tibble(
+    time = seq(0,1000,1),
+    nutrients = seq(from = 0,to = 5, by = 0.005))
+
+forcing <- approxfun(forcing_df)
+## Function:
+fisheries <- function(t,y,params){
+    with(as.list(c(y, params)), {
+    x = y
+    c <- forcing(t) 
+    dx = x * (1-x/K) - c * (x^2/(x^2 + 1)) + runif(1, min = -2, max = 2)
+    
+    return(list(c(dx)))
+  })
+}
+
+## set up time steps
+times <- seq(from = 0, to = 1000, by = 0.01)
+
+## initial conditions
+yini <- 8
+
+## Parameters
+params <- list(
+    K = 10
+)
+
+## run the model
+out <- ode(
+      y = yini, times = times,  func = fisheries, parms = params,
+      method = "rk4", 
+      events=list(func = posfun, time = times)
+)
+```
+
+```{r}
+out |> as_tibble() |> 
+    rename(fish = `1`) |> 
+    ggplot(aes(x=time, y=fish)) +
+    geom_line(size = 0.25, show.legend = T) +
+    theme_light()
+```
+
+We will use only the part of the time series before it tips to the low density sate.
+
+```{r}
+dat <- out |> as_tibble() |> 
+    filter(time > 10, time < 550) |> 
+    rename(fish = `1`) |> 
+    mutate(time = as.numeric(time), fish = as.numeric(fish)) |> 
+    filter(time %in% seq(10, 550, by = 0.1))
+```
+
+
+```{r fig.show = "hide", warnings = FALSE, message = FALSE}
+ews <- generic_ews(dat$fish, winsize = 50, detrending = "gaussian")
+```
+
+
+
+```{r}
+ews |> 
+    pivot_longer(cols = ar1:last_col(), names_to = "ews", values_to = "value") |> 
+    ggplot(aes(timeindex, value)) +
+    geom_line() +
+    facet_wrap(.~ews, scales = "free_y") +
+    theme_light()
+```
+
+- Discuss in groups what is the meaning of each early warning statistic? Make a small table of what an increase or decrease of the statistic means -- how to interpret it?
+
+### Real case study
+
+We will use real time series data of primary productivy of ecosystems as observed from remote sensing products. I have cleaned already the data and subset one slice of the planet at latitude ~59.375 degrees which is close to Stockholm. 
+```{r}
+world |> 
+    ggplot() +
+    geom_sf( size = 0.05, color = "black") +
+    geom_hline(yintercept = 59.375, color = "red") +
+    geom_vline(xintercept = 79.375, color = "blue") +
+    theme_void()
+```
+
+```{r}
+load("data/lat_59.375.RData")
+load("data/keys_gpp.RData")
+dim(mat)
+```
+
+The data is store as matrix where the columns are longitude pixels (the x-axis), and rows are weakly observations. There are 828 observations, thus ~ `r 828/52` years of data. The `keys_gpp.RData` file contains the meta data, with the numeric coordinates of the 720 values of latitude, 1440 values of longitude, and 828 values of time. Here we only loaded one slice in latitude.
+
+Pick one or a few places in that latitude slide and check for early warning singals. What do you find? Discuss in your group and come back with ideas of how to compare it? Can you trust the signals?
+
+An example for Stockholm (~18 deg in longitude). The available longitude slices are:
+```{r}
+lon[near(lon, 18, tol = 0.5)] # values
+which(near(lon, 18, tol = 0.5)) # positions
+```
+
+Then we subset the data, either by changing the name (`mat[,"79.375"]`) or the position (`mat[,794]`):
+```{r}
+dat <- tibble(
+    time = time,
+    gpp = mat[,"18.125"]
+)
+
+dat
+```
+
+```{r}
+dat |> 
+    ggplot(aes(time, gpp)) + 
+    geom_line()
+```
+
+```{r}
+ews <- generic_ews(dat$gpp, winsize = 50)
+```
+
+Experiment with:
+
+- Changing place
+- Changing the rolling window size `winsize`
+- Read the help package of the function `generic_ews()` and explore detrending methods, do you find the same results?
+
+On the real example we cannot play Gods, we do not know what is the real shape of the basin of attraction, if its size is changing or not. Under which conditions do you think the early warning signals could be misleading? And what can you do to avoid fooling ourselves?
